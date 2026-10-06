@@ -3,10 +3,14 @@
 #include <shellapi.h>
 #include <commctrl.h>
 #include <wchar.h>
+#include <objbase.h>
+#include <shlobj.h>
+#include <strsafe.h>
 #include "haedrez/layout.h"
+#include "haedrez/browser.h"
 
-enum { HD_LAUNCH = 100, HD_SEARCH = 101, HD_OPEN = 200, HD_EXIT = 201,
-       HD_TRAY = WM_APP + 1 };
+enum { HD_LAUNCH = 100, HD_SEARCH = 101, HD_MESSENGER = 102, HD_OPEN = 200, HD_EXIT = 201,
+       HD_TRAY = WM_APP + 1, HD_BROWSER_STATE = WM_APP + 2 };
 
 static HINSTANCE instance;
 static HWND launcher;
@@ -14,11 +18,114 @@ static HWND launch_button;
 static HWND panel;
 static HWND search;
 static HWND status_label;
+static HWND messenger_button;
+static HWND messenger_window;
+static HWND messenger_status;
+static hd_browser *messenger_browser;
+static BOOL messenger_failed;
 static HWND tooltip;
 static HFONT ui_font;
 static UINT taskbar_created;
 static BOOL tray_added;
 static BOOL smoke_mode;
+
+static int scale(int value, UINT dpi);
+static RECT work_area(HWND window);
+
+static void browser_status(HRESULT result)
+{
+    WCHAR text[128];
+    messenger_failed = FAILED(result);
+    if (messenger_failed) {
+        StringCchPrintfW(text, ARRAYSIZE(text), L"Messenger unavailable (0x%08lX)", (unsigned long)result);
+        SetWindowTextW(messenger_status, text);
+        SetWindowPos(messenger_status, HWND_TOP, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+    } else {
+        ShowWindow(messenger_status, SW_HIDE);
+    }
+}
+
+static void start_messenger(void)
+{
+    LPWSTR folder = NULL;
+    WCHAR profile[32768];
+    HRESULT result = SHGetKnownFolderPath(&FOLDERID_LocalAppData, 0, NULL, &folder);
+    SetWindowTextW(messenger_status, L"Loading Messenger...");
+    ShowWindow(messenger_status, SW_SHOW);
+    messenger_failed = FALSE;
+    if (SUCCEEDED(result)) {
+        result = StringCchPrintfW(profile, ARRAYSIZE(profile), L"%ls\\Haedrez\\WebView2", folder);
+    }
+    CoTaskMemFree(folder);
+    if (SUCCEEDED(result)) {
+        result = hd_browser_create(messenger_window, profile, L"https://www.facebook.com/messages/",
+                                   HD_BROWSER_STATE, &messenger_browser);
+    }
+    if (FAILED(result)) browser_status(result);
+}
+
+static void open_messenger(void)
+{
+    if (!messenger_window) {
+        RECT work = work_area(launcher);
+        UINT dpi = GetDpiForWindow(launcher);
+        hd_rect bounds = { work.left, work.top, work.right, work.bottom };
+        hd_rect target = hd_anchor(bounds, scale(480, dpi), scale(640, dpi), scale(76, dpi));
+        messenger_window = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+            L"Haedrez.Messenger", L"Haedrez - Messenger", WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME,
+            target.left, target.top, target.right - target.left, target.bottom - target.top,
+            launcher, NULL, instance, NULL);
+        if (!messenger_window) {
+            MessageBoxW(launcher, L"Could not create the Messenger window.", L"Haedrez", MB_OK | MB_ICONERROR);
+            return;
+        }
+        start_messenger();
+    } else if (messenger_failed) {
+        hd_browser_close(messenger_browser);
+        messenger_browser = NULL;
+        start_messenger();
+    }
+    ShowWindow(messenger_window, SW_SHOW);
+    SetForegroundWindow(messenger_window);
+}
+
+static LRESULT CALLBACK messenger_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam)
+{
+    switch (message) {
+    case WM_CREATE:
+        messenger_status = CreateWindowExW(0, L"STATIC", L"Loading Messenger...",
+            WS_CHILD | WS_VISIBLE | SS_CENTER, 12, 24, 320, 64, window, NULL, instance, NULL);
+        SendMessageW(messenger_status, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
+        return 0;
+    case HD_BROWSER_STATE:
+        browser_status((HRESULT)lparam);
+        return 0;
+    case WM_SIZE: {
+        RECT client;
+        GetClientRect(window, &client);
+        MoveWindow(messenger_status, 12, 24, client.right > 24 ? client.right - 24 : 1, 64, TRUE);
+        if (messenger_browser) hd_browser_resize(messenger_browser);
+        return 0;
+    }
+    case WM_DPICHANGED: {
+        const RECT *suggested = (const RECT *)lparam;
+        SetWindowPos(window, HWND_TOPMOST, suggested->left, suggested->top,
+            suggested->right - suggested->left, suggested->bottom - suggested->top, SWP_NOACTIVATE);
+        return 0;
+    }
+    case WM_CLOSE:
+        ShowWindow(window, SW_HIDE);
+        return 0;
+    case WM_DESTROY:
+        hd_browser_close(messenger_browser);
+        messenger_browser = NULL;
+        messenger_window = NULL;
+        return 0;
+    default:
+        return DefWindowProcW(window, message, wparam, lparam);
+    }
+}
 
 static int scale(int value, UINT dpi)
 {
@@ -98,6 +205,7 @@ static void show_menu(void)
     UINT command;
     if (!menu) return;
     AppendMenuW(menu, MF_STRING, HD_OPEN, L"Contacts");
+    AppendMenuW(menu, MF_STRING, HD_MESSENGER, L"Open Messenger");
     AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
     AppendMenuW(menu, MF_STRING, HD_EXIT, L"Exit Haedrez");
     GetCursorPos(&cursor);
@@ -106,6 +214,7 @@ static void show_menu(void)
                                   cursor.x, cursor.y, 0, launcher, NULL);
     DestroyMenu(menu);
     if (command == HD_OPEN) toggle_panel();
+    if (command == HD_MESSENGER) open_messenger();
     if (command == HD_EXIT) DestroyWindow(launcher);
     else PostMessageW(launcher, WM_NULL, 0, 0);
 }
@@ -125,9 +234,11 @@ static void layout_panel(HWND window)
                          CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
     SendMessageW(search, WM_SETFONT, (WPARAM)ui_font, TRUE);
     SendMessageW(status_label, WM_SETFONT, (WPARAM)ui_font, TRUE);
+    SendMessageW(messenger_button, WM_SETFONT, (WPARAM)ui_font, TRUE);
     if (old_font) DeleteObject(old_font);
     MoveWindow(search, margin, margin, width, scale(32, dpi), TRUE);
     MoveWindow(status_label, margin, scale(68, dpi), width, scale(72, dpi), TRUE);
+    MoveWindow(messenger_button, margin, scale(148, dpi), width, scale(36, dpi), TRUE);
 }
 
 static LRESULT CALLBACK panel_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam)
@@ -141,6 +252,9 @@ static LRESULT CALLBACK panel_proc(HWND window, UINT message, WPARAM wparam, LPA
         EnableWindow(search, FALSE);
         status_label = CreateWindowExW(0, L"STATIC", L"No connected provider",
             WS_CHILD | WS_VISIBLE | SS_LEFT, 0, 0, 1, 1, window, NULL, instance, NULL);
+        messenger_button = CreateWindowExW(0, L"BUTTON", L"Open Messenger",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+            0, 0, 1, 1, window, (HMENU)(INT_PTR)HD_MESSENGER, instance, NULL);
         layout_panel(window);
         return 0;
     case WM_SIZE:
@@ -152,6 +266,9 @@ static LRESULT CALLBACK panel_proc(HWND window, UINT message, WPARAM wparam, LPA
         return 0;
     case WM_CLOSE:
         ShowWindow(window, SW_HIDE);
+        return 0;
+    case WM_COMMAND:
+        if (LOWORD(wparam) == HD_MESSENGER && HIWORD(wparam) == BN_CLICKED) open_messenger();
         return 0;
     case WM_KEYDOWN:
         if (wparam == VK_ESCAPE) ShowWindow(window, SW_HIDE);
@@ -242,6 +359,7 @@ static LRESULT CALLBACK launcher_proc(HWND window, UINT message, WPARAM wparam, 
         notification.hWnd = window;
         notification.uID = 1;
         if (tray_added) Shell_NotifyIconW(NIM_DELETE, &notification);
+        if (messenger_window) DestroyWindow(messenger_window);
         if (panel) DestroyWindow(panel);
         if (ui_font) DeleteObject(ui_font);
         PostQuitMessage(0);
@@ -259,6 +377,7 @@ int WINAPI wWinMain(HINSTANCE app_instance, HINSTANCE previous, PWSTR command_li
     MSG message;
     HANDLE singleton = NULL;
     BOOL result;
+    BOOL com_initialized = FALSE;
     (void)previous;
     (void)show;
     smoke_mode = wcscmp(command_line, L"--smoke-test") == 0;
@@ -271,6 +390,8 @@ int WINAPI wWinMain(HINSTANCE app_instance, HINSTANCE previous, PWSTR command_li
         }
     }
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    if (FAILED(CoInitializeEx(NULL, COINIT_APARTMENTTHREADED))) goto failed;
+    com_initialized = TRUE;
     InitCommonControlsEx(&controls);
     instance = app_instance;
     taskbar_created = RegisterWindowMessageW(L"TaskbarCreated");
@@ -278,6 +399,9 @@ int WINAPI wWinMain(HINSTANCE app_instance, HINSTANCE previous, PWSTR command_li
     window_class.hCursor = LoadCursorW(NULL, IDC_ARROW);
     window_class.lpfnWndProc = launcher_proc;
     window_class.lpszClassName = L"Haedrez.Launcher";
+    if (!RegisterClassExW(&window_class)) goto failed;
+    window_class.lpfnWndProc = messenger_proc;
+    window_class.lpszClassName = L"Haedrez.Messenger";
     if (!RegisterClassExW(&window_class)) goto failed;
     window_class.lpfnWndProc = panel_proc;
     window_class.lpszClassName = L"Haedrez.Contacts";
@@ -290,18 +414,21 @@ int WINAPI wWinMain(HINSTANCE app_instance, HINSTANCE previous, PWSTR command_li
     panel = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
         L"Haedrez.Contacts", L"Haedrez - Contacts", WS_POPUP | WS_CAPTION | WS_SYSMENU,
         0, 0, 340, 440, launcher, NULL, instance, NULL);
-    if (!panel || !launch_button || !search || !status_label) goto failed;
+    if (!panel || !launch_button || !search || !status_label || !messenger_button) goto failed;
     position_launcher();
     ShowWindow(launcher, SW_SHOWNOACTIVATE);
+    if (wcscmp(command_line, L"--messenger") == 0) open_messenger();
     while ((result = GetMessageW(&message, NULL, 0, 0)) > 0) {
         TranslateMessage(&message);
         DispatchMessageW(&message);
     }
     if (singleton) CloseHandle(singleton);
+    if (com_initialized) CoUninitialize();
     return result == -1 ? 1 : (int)message.wParam;
 failed:
     MessageBoxW(NULL, L"Haedrez could not create its desktop windows.", L"Haedrez", MB_OK | MB_ICONERROR);
     if (launcher) DestroyWindow(launcher);
     if (singleton) CloseHandle(singleton);
+    if (com_initialized) CoUninitialize();
     return 1;
 }
