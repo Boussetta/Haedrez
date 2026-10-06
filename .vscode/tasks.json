@@ -27,6 +27,24 @@
 				"$msCompile"
 			],
 			"group": "build"
+		},
+		{
+			"label": "Haedrez: Check Windows CI",
+			"type": "shell",
+			"command": "gh",
+			"args": [
+				"pr",
+				"checks"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Haedrez: Open Messenger trial",
+			"type": "shell",
+			"command": "if (Get-Process haedrez -ErrorAction SilentlyContinue) { Write-Output 'Haedrez is already running. Exit the existing instance from its tray menu before launching this build.' } else { $app = Start-Process -FilePath '${workspaceFolder}\\build\\msvc\\Debug\\haedrez.exe' -ArgumentList '--messenger' -PassThru; if ($app.WaitForInputIdle(10000)) { Write-Output 'Messenger trial started.' } else { Write-Error 'App startup timed out.' } }",
+			"isBackground": false,
+			"problemMatcher": []
 		}
 	]
 }
