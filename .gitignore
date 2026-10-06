@@ -3,3 +3,5 @@ out/
 .vs/
 *.user
 *.log
+*.WebView2/
+WebView2/

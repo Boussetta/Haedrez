@@ -1,0 +1,32 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Haedrez: Configure MSVC",
+			"type": "shell",
+			"command": "cmake",
+			"args": [
+				"--preset",
+				"msvc"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Haedrez: Build Debug",
+			"type": "shell",
+			"command": "cmake",
+			"args": [
+				"--build",
+				"--preset",
+				"msvc-debug"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$msCompile"
+			],
+			"group": "build"
+		}
+	]
+}
