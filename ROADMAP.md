@@ -4,8 +4,9 @@
    Windows CI, circular launcher, taskbar-aware positioning, DPI support,
    always-on-top panel, tray exit, and focused tests.
 2. **Personal Messenger feasibility** (`milestone/m2-messenger-feasibility`):
-   confirm consent to a browser runtime, compile COM integration as C, test
-   Messenger login and 2FA on the user's device without collecting credentials.
+   browser runtime trial approved; C COM hosting and unauthenticated entry-page
+   navigation verified. Test Messenger login, 2FA, messaging, attachments,
+   per-device persistence and voice/video on the user's device without collecting credentials.
    No promise of online presence or a native friends list.
 3. **Contacts and chat heads** (`milestone/m3-chat-heads`): searchable saved
    contacts, stacked/draggable bubbles, per-contact conversation windows,
